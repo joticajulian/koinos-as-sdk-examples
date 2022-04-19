@@ -1,0 +1,24 @@
+{
+    "extends": "@tsconfig/node12/tsconfig.json",
+    "compilerOptions": {
+      "lib": ["ES2019", "DOM"],
+      "strict": true,
+      "allowSyntheticDefaultImports": true,
+      "forceConsistentCasingInFileNames": true,
+      "noUnusedLocals": true,
+      "noImplicitThis": true,
+      "strictNullChecks": true,
+      "noUnusedParameters": true,
+      "sourceMap": true,
+      "moduleResolution": "node",
+      "experimentalDecorators": true,
+      "resolveJsonModule": true,
+      "noImplicitAny": false,
+      "allowJs": true,
+      "declaration": false,
+      "skipLibCheck": true,
+      "target": "ES2016",
+      //"module": "CommonJS"
+    },
+    "include": ["src/**/*.ts"]
+  }
