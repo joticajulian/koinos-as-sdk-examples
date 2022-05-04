@@ -8,6 +8,8 @@ import {
   System,
   Crypto,
   Base58,
+  Space,
+  StringBytes,
 } from "koinos-sdk-as";
 import { wallet } from "./proto/wallet";
 import { Collection } from "./Collection";
@@ -22,12 +24,10 @@ const AUTHORITIES_SPACE_ID = 1;
 const PROTECTED_CONTRACTS_SPACE_ID = 2;
 const REQUESTS_UPDATE_PROTECTION_SPACE_ID = 3;
 
-const AUTHORITY_NAMES_KEY = new Uint8Array(1);
 const PROTECTED_KEYS_KEY = new Uint8Array(1);
 const REQUEST_UPDATE_RECOVERY_KEY = new Uint8Array(1);
 const REQUESTS_UPDATE_PROTECTION_KEYS_KEY = new Uint8Array(1);
 const COUNTER_REQUESTS_UPDATE_PROTECTION_KEY = new Uint8Array(1);
-AUTHORITY_NAMES_KEY[0] = 0;
 PROTECTED_KEYS_KEY[0] = 1;
 REQUEST_UPDATE_RECOVERY_KEY[0] = 2;
 REQUESTS_UPDATE_PROTECTION_KEYS_KEY[0] = 3;
@@ -84,15 +84,9 @@ function isImpossible(authority: wallet.authority): boolean {
 
 class ResultVerifyArgumentsAuthority {
   existOwner: boolean;
-  names: string[];
   existingAuthority: wallet.authority | null;
-  constructor(
-    existOwner: boolean,
-    names: string[],
-    existingAuthority: wallet.authority | null
-  ) {
+  constructor(existOwner: boolean, existingAuthority: wallet.authority | null) {
     this.existOwner = existOwner;
-    this.names = names;
     this.existingAuthority = existingAuthority;
   }
 }
@@ -121,7 +115,7 @@ export class Result {
 export class Wallet {
   contractId: Uint8Array;
   varsSpace: chain.object_space;
-  authorities: Collection<wallet.authority, string>;
+  authorities: Space.Space<string, wallet.authority>;
   protections: Collection<wallet.authority_contract, Uint8Array>;
   requests: Collection<wallet.request_update_protection_arguments, Uint8Array>;
 
@@ -132,14 +126,11 @@ export class Wallet {
       this.contractId,
       VARS_SPACE_ID
     );
-    this.authorities = new Collection(
-      new chain.object_space(false, this.contractId, AUTHORITIES_SPACE_ID),
-      this.varsSpace,
-      AUTHORITY_NAMES_KEY,
-      new Uint8Array(1), // not used
-      wallet.authority.encode,
+    this.authorities = new Space.Space(
+      this.contractId,
+      AUTHORITIES_SPACE_ID,
       wallet.authority.decode,
-      true
+      wallet.authority.encode
     );
     this.protections = new Collection(
       new chain.object_space(
@@ -255,8 +246,7 @@ export class Wallet {
     isNewAuthority: boolean,
     remove: bool
   ): ResultVerifyArgumentsAuthority {
-    let names = this.authorities.getKeysS();
-    const existOwner = names.length > 0;
+    const existOwner = this.authorities.has("owner");
     if (isNewAuthority && !existOwner && name != "owner") {
       exit("the first authority must be 'owner'");
     }
@@ -292,11 +282,7 @@ export class Wallet {
         else exit("the authority was tagged as impossible but it is not");
       }
     }
-    return new ResultVerifyArgumentsAuthority(
-      existOwner,
-      names,
-      existingAuthority
-    );
+    return new ResultVerifyArgumentsAuthority(existOwner, existingAuthority);
   }
 
   add_authority(
@@ -311,9 +297,7 @@ export class Wallet {
     );
     if (resultVerify.existOwner) this._requireAuthority("owner");
     args.authority!.last_update = System.getHeadInfo().head_block_time;
-    this.authorities.set(args.name!, args.authority!);
-    resultVerify.names.push(args.name!);
-    this.authorities.setKeysS(resultVerify.names);
+    this.authorities.put(args.name!, args.authority!);
     return new wallet.add_authority_result(true);
   }
 
@@ -440,10 +424,9 @@ export class Wallet {
     // update authority
     if (args.remove) {
       this.authorities.remove(args.name!);
-      this.authorities.removeKeyS(args.name!);
     } else {
       args.authority!.last_update = System.getHeadInfo().head_block_time;
-      this.authorities.set(args.name!, args.authority!);
+      this.authorities.put(args.name!, args.authority!);
     }
 
     // remove existing request
@@ -688,11 +671,13 @@ export class Wallet {
     args: wallet.get_authorities_arguments
   ): wallet.get_authorities_result {
     const result = new wallet.get_authorities_result();
-    const names = this.authorities.getKeysS();
-    for (let i = 0; i < names.length; i++) {
-      const authority = this.authorities.get(names[i]);
+    const dbAuthorities = this.authorities.getMany("");
+    for (let i = 0; i < dbAuthorities.length; i++) {
       result.authorities.push(
-        new wallet.add_authority_arguments(names[i], authority)
+        new wallet.add_authority_arguments(
+          StringBytes.bytesToString(dbAuthorities[i].key),
+          dbAuthorities[i].value
+        )
       );
     }
     return result;
