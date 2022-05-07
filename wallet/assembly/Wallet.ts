@@ -12,8 +12,8 @@ import {
   StringBytes,
 } from "koinos-sdk-as";
 import { wallet } from "./proto/wallet";
-import { Collection } from "./Collection";
 import { equalBytes } from "./utils";
+import { VarsSpace } from "./VarsSpace";
 
 export const GRACE_PERIOD_PROTECTION: u64 = 86400 * 1000; // 1 day
 export const GRACE_PERIOD_RECOVERY: u64 = 86400 * 1000; // 1 day
@@ -23,15 +23,6 @@ const VARS_SPACE_ID = 0;
 const AUTHORITIES_SPACE_ID = 1;
 const PROTECTED_CONTRACTS_SPACE_ID = 2;
 const REQUESTS_UPDATE_PROTECTION_SPACE_ID = 3;
-
-const PROTECTED_KEYS_KEY = new Uint8Array(1);
-const REQUEST_UPDATE_RECOVERY_KEY = new Uint8Array(1);
-const REQUESTS_UPDATE_PROTECTION_KEYS_KEY = new Uint8Array(1);
-const COUNTER_REQUESTS_UPDATE_PROTECTION_KEY = new Uint8Array(1);
-PROTECTED_KEYS_KEY[0] = 1;
-REQUEST_UPDATE_RECOVERY_KEY[0] = 2;
-REQUESTS_UPDATE_PROTECTION_KEYS_KEY[0] = 3;
-COUNTER_REQUESTS_UPDATE_PROTECTION_KEY[0] = 4;
 
 function exit(message: string): void {
   System.log(message);
@@ -114,49 +105,31 @@ export class Result {
 
 export class Wallet {
   contractId: Uint8Array;
-  varsSpace: chain.object_space;
+  varsSpace: VarsSpace;
   authorities: Space.Space<string, wallet.authority>;
-  protections: Collection<wallet.authority_contract, Uint8Array>;
-  requests: Collection<wallet.request_update_protection_arguments, Uint8Array>;
+  protections: Space.Space<Uint8Array, wallet.authority_contract>;
+  requests: Space.Space<Uint8Array, wallet.request_update_protection_arguments>;
 
   constructor() {
     this.contractId = System.getContractId();
-    this.varsSpace = new chain.object_space(
-      false,
-      this.contractId,
-      VARS_SPACE_ID
-    );
+    this.varsSpace = new VarsSpace(this.contractId, VARS_SPACE_ID);
     this.authorities = new Space.Space(
       this.contractId,
       AUTHORITIES_SPACE_ID,
       wallet.authority.decode,
       wallet.authority.encode
     );
-    this.protections = new Collection(
-      new chain.object_space(
-        false,
-        this.contractId,
-        PROTECTED_CONTRACTS_SPACE_ID
-      ),
-      this.varsSpace,
-      PROTECTED_KEYS_KEY,
-      new Uint8Array(1), // not used
-      wallet.authority_contract.encode,
+    this.protections = new Space.Space(
+      this.contractId,
+      PROTECTED_CONTRACTS_SPACE_ID,
       wallet.authority_contract.decode,
-      false
+      wallet.authority_contract.encode
     );
-    this.requests = new Collection(
-      new chain.object_space(
-        false,
-        this.contractId,
-        REQUESTS_UPDATE_PROTECTION_SPACE_ID
-      ),
-      this.varsSpace,
-      REQUESTS_UPDATE_PROTECTION_KEYS_KEY,
-      COUNTER_REQUESTS_UPDATE_PROTECTION_KEY,
-      wallet.request_update_protection_arguments.encode,
+    this.requests = new Space.Space(
+      this.contractId,
+      REQUESTS_UPDATE_PROTECTION_SPACE_ID,
       wallet.request_update_protection_arguments.decode,
-      false
+      wallet.request_update_protection_arguments.encode
     );
   }
 
@@ -311,26 +284,14 @@ export class Wallet {
       false,
       args.remove
     );
-    const existingRequest = System.getObject<
-      Uint8Array,
-      wallet.request_update_recovery_arguments
-    >(
-      this.varsSpace,
-      REQUEST_UPDATE_RECOVERY_KEY,
-      wallet.request_update_recovery_arguments.decode
-    );
+    const existingRequest = this.varsSpace.getRequestUpdateRecovery();
     if (existingRequest) exit("request ongoing to update recovery");
     if (!args.remove) args.authority!.last_update = 0;
     args.application_time =
       System.getHeadInfo().head_block_time + PERIOD_UPDATE_RECOVERY;
     this._requireAuthority("owner");
 
-    System.putObject(
-      this.varsSpace,
-      REQUEST_UPDATE_RECOVERY_KEY,
-      args,
-      wallet.request_update_recovery_arguments.encode
-    );
+    this.varsSpace.putRequestUpdateRecovery(args);
     return new wallet.request_update_recovery_result(true);
   }
 
@@ -338,16 +299,9 @@ export class Wallet {
     args: wallet.cancel_request_update_recovery_arguments
   ): wallet.cancel_request_update_recovery_result {
     this._requireAuthority("owner");
-    const request = System.getObject<
-      Uint8Array,
-      wallet.request_update_recovery_arguments
-    >(
-      this.varsSpace,
-      REQUEST_UPDATE_RECOVERY_KEY,
-      wallet.request_update_recovery_arguments.decode
-    );
+    const request = this.varsSpace.getRequestUpdateRecovery();
     if (!request) exit("request update recovery not found");
-    System.removeObject(this.varsSpace, REQUEST_UPDATE_RECOVERY_KEY);
+    this.varsSpace.removeRequestUpdateRecovery();
     return new wallet.cancel_request_update_recovery_result(true);
   }
 
@@ -382,14 +336,7 @@ export class Wallet {
         }
 
         if (!authorized) {
-          const request = System.getObject<
-            Uint8Array,
-            wallet.request_update_recovery_arguments
-          >(
-            this.varsSpace,
-            REQUEST_UPDATE_RECOVERY_KEY,
-            wallet.request_update_recovery_arguments.decode
-          );
+          const request = this.varsSpace.getRequestUpdateRecovery();
           if (!request) {
             exit("request to update recovery not found");
           }
@@ -431,16 +378,8 @@ export class Wallet {
 
     // remove existing request
     if (args.name == "recovery") {
-      const request = System.getObject<
-        Uint8Array,
-        wallet.request_update_recovery_arguments
-      >(
-        this.varsSpace,
-        REQUEST_UPDATE_RECOVERY_KEY,
-        wallet.request_update_recovery_arguments.decode
-      );
-      if (request)
-        System.removeObject(this.varsSpace, REQUEST_UPDATE_RECOVERY_KEY);
+      const request = this.varsSpace.getRequestUpdateRecovery();
+      if (request) this.varsSpace.removeRequestUpdateRecovery();
     }
 
     return new wallet.update_authority_result(true);
@@ -504,8 +443,7 @@ export class Wallet {
 
     args.authority!.last_update = System.getHeadInfo().head_block_time;
     this._requireAuthority("owner");
-    this.protections.set(resultVerify.protectionKey, args.authority!);
-    this.protections.addKey(resultVerify.protectionKey);
+    this.protections.put(resultVerify.protectionKey, args.authority!);
 
     return new wallet.add_protection_result(true);
   }
@@ -520,10 +458,10 @@ export class Wallet {
       args.remove
     );
 
-    const requests = this.requests.getAll();
+    const requests = this.requests.getMany(new Uint8Array(1));
     for (let i = 0; i < requests.length; i++) {
       const pKey = Protobuf.encode(
-        requests[i].protected_contract,
+        requests[i].value.protected_contract,
         wallet.protected_contract.encode
       );
       if (equalBytes(resultVerify.protectionKey, pKey))
@@ -534,14 +472,13 @@ export class Wallet {
     args.application_time =
       System.getHeadInfo().head_block_time +
       resultVerify.existingAuthority!.delay_update;
-    const counter = this.requests.getCounter() + 1;
+    const counter = this.varsSpace.getRequestsCounter() + 1;
     args.id = counter;
     this._requireAuthority("owner");
 
-    const key = Collection.calcKey(args.id);
-    this.requests.set(key, args);
-    this.requests.addKey(key);
-    this.requests.setCounter(counter);
+    const key = VarsSpace.calcCounterKey(args.id);
+    this.requests.put(key, args);
+    this.varsSpace.putRequestsCounter(counter);
 
     return new wallet.request_update_protection_result(true);
   }
@@ -550,11 +487,10 @@ export class Wallet {
     args: wallet.cancel_request_update_protection_arguments
   ): wallet.cancel_request_update_protection_result {
     this._requireAuthority("owner");
-    const key = Collection.calcKey(args.id);
+    const key = VarsSpace.calcCounterKey(args.id);
     const request = this.requests.get(key);
     if (!request) exit("request not found");
     this.requests.remove(key);
-    this.requests.removeKey(key);
     return new wallet.cancel_request_update_protection_result(true);
   }
 
@@ -570,7 +506,8 @@ export class Wallet {
 
     let authorized: boolean = false;
     let indexRequest: i32 = -1;
-    let requests: wallet.request_update_protection_arguments[] = [];
+    let requests: System.ProtoDatabaseObject<wallet.request_update_protection_arguments>[] =
+      [];
     const bytes1 = Protobuf.encode(
       args.protected_contract,
       wallet.protected_contract.encode
@@ -598,16 +535,16 @@ export class Wallet {
       }
 
       if (!authorized) {
-        requests = this.requests.getAll();
+        requests = this.requests.getMany(new Uint8Array(1));
         for (let i = 0; i < requests.length; i++) {
           const bytes1Req = Protobuf.encode(
-            requests[i].protected_contract,
+            requests[i].value.protected_contract,
             wallet.protected_contract.encode
           );
           const bytes2Req = args.remove
             ? new Uint8Array(0)
             : Protobuf.encode(
-                requests[i].authority,
+                requests[i].value.authority,
                 wallet.authority_contract.encode
               );
           if (equalBytes(bytes1, bytes1Req) && equalBytes(bytes2, bytes2Req)) {
@@ -618,7 +555,7 @@ export class Wallet {
         if (indexRequest < 0) {
           exit("request to update protection not found");
         }
-        if (requests[indexRequest].application_time > now) {
+        if (requests[indexRequest].value.application_time > now) {
           exit("it is not yet the application time");
         }
         authorized = true;
@@ -632,24 +569,23 @@ export class Wallet {
     // update protection
     if (args.remove) {
       this.protections.remove(resultVerify.protectionKey);
-      this.protections.removeKey(resultVerify.protectionKey);
     } else {
       args.authority!.last_update = System.getHeadInfo().head_block_time;
-      this.protections.set(resultVerify.protectionKey, args.authority!);
+      this.protections.put(resultVerify.protectionKey, args.authority!);
     }
 
     // remove existing request
     if (indexRequest < 0) {
-      requests = this.requests.getAll();
+      requests = this.requests.getMany(new Uint8Array(1));
       for (let i = 0; i < requests.length; i++) {
         const bytes1Req = Protobuf.encode(
-          requests[i].protected_contract,
+          requests[i].value.protected_contract,
           wallet.protected_contract.encode
         );
         const bytes2Req = args.remove
           ? new Uint8Array(0)
           : Protobuf.encode(
-              requests[i].authority,
+              requests[i].value.authority,
               wallet.authority_contract.encode
             );
         if (equalBytes(bytes1, bytes1Req) && equalBytes(bytes2, bytes2Req)) {
@@ -659,9 +595,8 @@ export class Wallet {
       }
     }
     if (indexRequest >= 0) {
-      const key = Collection.calcKey(requests[indexRequest].id);
+      const key = VarsSpace.calcCounterKey(requests[indexRequest].value.id);
       this.requests.remove(key);
-      this.requests.removeKey(key);
     }
 
     return new wallet.update_protection_result(true);
@@ -687,13 +622,13 @@ export class Wallet {
     args: wallet.get_protections_arguments
   ): wallet.get_protections_result {
     const result = new wallet.get_protections_result();
-    const keys = this.protections.getKeys();
-    for (let i = 0; i < keys.length; i++) {
+    const protections = this.protections.getMany(new Uint8Array(1));
+    for (let i = 0; i < protections.length; i++) {
       const protectedContract = Protobuf.decode<wallet.protected_contract>(
-        keys[i],
+        protections[i].key!,
         wallet.protected_contract.decode
       );
-      const authorityContract = this.protections.get(keys[i]);
+      const authorityContract = protections[i].value;
       result.protections.push(
         new wallet.add_protection_arguments(
           protectedContract,
@@ -707,14 +642,7 @@ export class Wallet {
   get_request_update_recovery(
     args: wallet.get_request_update_recovery_arguments
   ): wallet.get_request_update_recovery_result {
-    const request = System.getObject<
-      Uint8Array,
-      wallet.request_update_recovery_arguments
-    >(
-      this.varsSpace,
-      REQUEST_UPDATE_RECOVERY_KEY,
-      wallet.request_update_recovery_arguments.decode
-    );
+    const request = this.varsSpace.getRequestUpdateRecovery();
     const result = new wallet.get_request_update_recovery_result(request);
     return result;
   }
@@ -723,9 +651,9 @@ export class Wallet {
     args: wallet.get_requests_update_protection_arguments
   ): wallet.get_requests_update_protection_result {
     const result = new wallet.get_requests_update_protection_result();
-    const keys = this.requests.getKeys();
-    for (let i = 0; i < keys.length; i++) {
-      const request = this.requests.get(keys[i]);
+    const requests = this.requests.getMany(new Uint8Array(1));
+    for (let i = 0; i < requests.length; i++) {
+      const request = requests[i].value;
       if (request == null) {
         System.log(`The key ${i} is empty`);
       } else {
